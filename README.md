@@ -113,7 +113,6 @@ pull steps and `env`.
 | --- | --- | --- |
 | `pool_management_endpoint` | `$ACA_SESSIONS_POOL_MANAGEMENT_ENDPOINT` on the worker | Session pool management endpoint URL. A flow run fails if neither is set |
 | `api_version` | `2025-10-02-preview` | Sessions data-plane API version |
-| `api_url` | `http://prefect/api` | Prefect API URL passed to the flow run session. Override for a different API endpoint |
 | `session_identifier` | flow run ID | Session to run in. A fixed value reuses one session across runs, so runs can see each other's files |
 | `pip_packages` | `["prefect"]` | Installed in the session before the run. Pin the Prefect version to match your server |
 | `poll_interval_seconds` | `10` | Seconds between status polls |

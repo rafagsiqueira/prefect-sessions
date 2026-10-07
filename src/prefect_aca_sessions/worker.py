@@ -17,7 +17,6 @@ from prefect_aca_sessions.client import SessionsClient
 from prefect_aca_sessions.snippets import build_poll_code, build_start_code
 
 DEFAULT_API_VERSION = "2025-10-02-preview"
-DEFAULT_API_URL = "http://prefect/api"
 DEFAULT_POLL_INTERVAL_SECONDS = 10
 FAILURE_EXIT_CODE = -1
 POOL_MANAGEMENT_ENDPOINT_ENV_VAR = "ACA_SESSIONS_POOL_MANAGEMENT_ENDPOINT"
@@ -40,11 +39,6 @@ class ACASessionsJobConfiguration(BaseJobConfiguration):
         default=DEFAULT_API_VERSION,
         description="Sessions data-plane API version.",
         json_schema_extra=dict(template="{{ api_version }}"),
-    )
-    api_url: str = Field(
-        default=DEFAULT_API_URL,
-        description="Prefect API URL passed to the flow run session.",
-        json_schema_extra=dict(template="{{ api_url }}"),
     )
     session_identifier: str | None = Field(
         default=None,
@@ -79,7 +73,6 @@ class ACASessionsJobConfiguration(BaseJobConfiguration):
                 "pool_management_endpoint is not set: provide it as a job variable or set "
                 f"{POOL_MANAGEMENT_ENDPOINT_ENV_VAR} in the worker's environment."
             )
-        self.env.setdefault("PREFECT_API_URL", self.api_url)
         return self
 
 
@@ -92,7 +85,6 @@ class ACASessionsVariables(BaseVariables):
         ),
     )
     api_version: str = Field(default=DEFAULT_API_VERSION, description="Sessions API version.")
-    api_url: str = Field(default=DEFAULT_API_URL, description="Prefect API URL for the flow run session.")
     session_identifier: str | None = Field(
         default=None, description="Session identifier. Defaults to the flow run ID."
     )

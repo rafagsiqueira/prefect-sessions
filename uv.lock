@@ -1,5 +1,5 @@
 version = 1
-revision = 3
+revision = 5
 requires-python = ">=3.12"
 resolution-markers = [
     "python_full_version >= '3.13'",
@@ -1334,7 +1334,7 @@ wheels = [
 
 [[package]]
 name = "prefect-aca-sessions"
-version = "1.1.2"
+version = "1.1.4"
 source = { editable = "." }
 dependencies = [
     { name = "azure-identity" },
