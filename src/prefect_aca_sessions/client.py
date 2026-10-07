@@ -10,6 +10,8 @@ from azure.identity.aio import DefaultAzureCredential
 
 SESSIONS_TOKEN_SCOPE = "https://dynamicsessions.io/.default"
 REQUEST_TIMEOUT_SECONDS = 300.0  # a single execution may run up to 220s
+EXECUTION_TIMEOUT_SECONDS = 60  # snippets only start or inspect the flow run process
+OUTPUT_STREAMS_MAX_LENGTH = 65536  # service default (4096) would truncate poll output
 
 
 class SessionExecutionError(RuntimeError):
@@ -58,11 +60,11 @@ class SessionsClient:
             params=self._params(identifier),
             headers=await self._headers(),
             json={
-                "properties": {
-                    "codeInputType": "inline",
-                    "executionType": "synchronous",
-                    "code": code,
-                }
+                "codeInputType": "Inline",
+                "executionType": "Synchronous",
+                "code": code,
+                "timeoutInSeconds": EXECUTION_TIMEOUT_SECONDS,
+                "outputStreamsMaxLength": OUTPUT_STREAMS_MAX_LENGTH,
             },
         )
         if response.is_error:
@@ -84,15 +86,15 @@ class SessionsClient:
 
 
 def _parse_execution(body: dict[str, Any]) -> ExecutionResult:
-    properties = body.get("properties", {})
+    output = body.get("result") or {}
     result = ExecutionResult(
-        status=properties.get("status", "Unknown"),
-        stdout=properties.get("stdout", ""),
-        stderr=properties.get("stderr", ""),
+        status=body.get("status", "Unknown"),
+        stdout=output.get("stdout") or "",
+        stderr=output.get("stderr") or "",
     )
     if result.status != "Succeeded":
         raise SessionExecutionError(
             f"Code execution ended with status {result.status!r}: "
-            f"{json.dumps(properties.get('result'))} {result.stderr}"
+            f"{json.dumps(body.get('error'))} {result.stderr}"
         )
     return result

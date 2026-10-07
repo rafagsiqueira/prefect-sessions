@@ -148,13 +148,15 @@ class ACASessionsWorker(BaseWorker):
             task_status.started(identifier)
 
         offset = 0
+        more = False
         while True:
-            await asyncio.sleep(configuration.poll_interval_seconds)
+            if not more:
+                await asyncio.sleep(configuration.poll_interval_seconds)
             poll = json.loads((await client.execute(identifier, build_poll_code(offset))).stdout)
-            offset = poll["offset"]
+            offset, more = poll["offset"], poll["more"]
             if poll["log"]:
                 logger.info(poll["log"].rstrip())
-            if poll["exit_code"] is not None:
+            if poll["exit_code"] is not None and not more:
                 return poll["exit_code"]
 
     @staticmethod

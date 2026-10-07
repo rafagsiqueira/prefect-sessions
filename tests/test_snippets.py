@@ -46,3 +46,21 @@ def test_poll_returns_only_log_after_offset(tmp_path):
 
     assert again["log"] == ""
     assert again["offset"] == first["offset"]
+
+
+def test_poll_returns_long_log_in_chunks_without_splitting_characters(tmp_path):
+    run_dir = str(tmp_path)
+    text = "é" * snippets.MAX_LOG_CHUNK_BYTES  # 2 bytes each, odd chunk boundary below
+    (tmp_path / "output.log").write_text("x" + text)
+    (tmp_path / "exit_code").write_text("0")
+
+    log, offset, polls = "", 0, 0
+    while True:
+        result = poll(run_dir, offset)
+        log, offset, polls = log + result["log"], result["offset"], polls + 1
+        if not result["more"]:
+            break
+
+    assert log == "x" + text
+    assert polls > 1
+    assert result["exit_code"] == 0

@@ -33,7 +33,14 @@ async def test_execute_posts_inline_code_with_token_and_identifier():
     def handler(request):
         seen["request"] = request
         return httpx.Response(
-            200, json={"properties": {"status": "Succeeded", "stdout": "hi\n", "stderr": ""}}
+            200,
+            json={
+                "id": "e1",
+                "identifier": "abc",
+                "executionType": "Synchronous",
+                "status": "Succeeded",
+                "result": {"stdout": "hi\n", "stderr": "", "executionResult": ""},
+            },
         )
 
     credential = FakeCredential()
@@ -45,7 +52,11 @@ async def test_execute_posts_inline_code_with_token_and_identifier():
     assert request.url.params["identifier"] == "abc"
     assert request.url.params["api-version"] == "v1"
     assert request.headers["Authorization"] == "Bearer tok"
-    assert json.loads(request.content)["properties"]["code"] == "print('hi')"
+    body = json.loads(request.content)
+    assert body["code"] == "print('hi')"
+    assert body["codeInputType"] == "Inline"
+    assert body["executionType"] == "Synchronous"
+    assert body["timeoutInSeconds"] > 0
     assert credential.scopes == ("https://dynamicsessions.io/.default",)
     assert result.stdout == "hi\n"
 
@@ -57,7 +68,11 @@ async def test_execute_raises_on_http_error():
 
 
 async def test_execute_raises_when_code_fails():
-    body = {"properties": {"status": "Failed", "stderr": "boom", "result": {"error": "E"}}}
+    body = {
+        "status": "Failed",
+        "error": {"error": {"code": "E", "message": "bad"}},
+        "result": {"stderr": "boom"},
+    }
     async with make_client(lambda r: httpx.Response(200, json=body)) as client:
         with pytest.raises(SessionExecutionError, match="boom"):
             await client.execute("abc", "x")

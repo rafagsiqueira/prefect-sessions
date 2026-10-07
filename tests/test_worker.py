@@ -68,7 +68,11 @@ def test_missing_endpoint_raises(monkeypatch):
 
 async def test_run_streams_until_exit_and_deletes_session(monkeypatch):
     fake = FakeClient(
-        ['{"log": "a\\n", "offset": 2, "exit_code": null}', '{"log": "", "offset": 2, "exit_code": 0}']
+        [
+            '{"log": "a\\n", "offset": 2, "more": false, "exit_code": null}',
+            '{"log": "b", "offset": 3, "more": true, "exit_code": 0}',
+            '{"log": "c", "offset": 4, "more": false, "exit_code": 0}',
+        ]
     )
     monkeypatch.setattr(worker_module, "SessionsClient", lambda *a, **k: fake)
     real_sleep = asyncio.sleep
@@ -81,5 +85,6 @@ async def test_run_streams_until_exit_and_deletes_session(monkeypatch):
     result = await worker.run(flow_run, config)
 
     assert result.status_code == 0
+    assert fake.polls == []  # kept polling until the remaining log was drained
     assert result.identifier == str(flow_run.id)
     assert fake.deleted == [str(flow_run.id)]
