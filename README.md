@@ -38,7 +38,7 @@ The package must be installed in the environment where `prefect` runs, because P
 discovers worker types through the `prefect.collections` entry point.
 
 ```bash
-uv pip install git+https://github.com/<you>/prefect-aca-sessions   # or: uv pip install -e .
+uv pip install prefect-aca-sessions                               # or, from a checkout: uv pip install -e .
 prefect worker start --help                                       # sanity check
 ```
 
@@ -55,8 +55,12 @@ export PREFECT_API_URL=https://prefect.example.com/api
 prefect work-pool create aca-sessions --type azure-container-apps-sessions
 ```
 
-Then open the pool in the UI (Work Pools → `aca-sessions` → Edit) and set the default
-**Pool management endpoint**, or leave it empty and set it per deployment.
+The session pool endpoint can be set in three places. Each one overrides the ones after it:
+
+1. Per deployment, with the `pool_management_endpoint` job variable.
+2. As the pool default, in the UI (Work Pools → `aca-sessions` → Edit → **Pool management endpoint**).
+3. On the worker host, with the `ACA_SESSIONS_POOL_MANAGEMENT_ENDPOINT` environment variable
+   (see step 5).
 
 ## 4. Authenticate the worker to Azure
 
@@ -69,6 +73,7 @@ Then open the pool in the UI (Work Pools → `aca-sessions` → Edit) and set th
 ## 5. Start the worker
 
 ```bash
+export ACA_SESSIONS_POOL_MANAGEMENT_ENDPOINT=https://<region>.dynamicsessions.io/subscriptions/<sub>/resourceGroups/<rg>/sessionPools/<pool>
 prefect worker start --pool aca-sessions --type azure-container-apps-sessions
 ```
 
@@ -93,7 +98,6 @@ if __name__ == "__main__":
         name="hello-aca",
         work_pool_name="aca-sessions",
         job_variables={
-            "pool_management_endpoint": "https://<region>.dynamicsessions.io/subscriptions/<sub>/resourceGroups/<rg>/sessionPools/<pool>",
             "pip_packages": ["prefect", "pandas"],
         },
     )
@@ -107,7 +111,7 @@ pull steps and `env`.
 
 | Variable | Default | Description |
 | --- | --- | --- |
-| `pool_management_endpoint` | required | Session pool management endpoint URL |
+| `pool_management_endpoint` | `$ACA_SESSIONS_POOL_MANAGEMENT_ENDPOINT` on the worker | Session pool management endpoint URL. A flow run fails if neither is set |
 | `api_version` | `2025-10-02-preview` | Sessions data-plane API version |
 | `session_identifier` | flow run ID | Session to run in. A fixed value reuses one session across runs, so runs can see each other's files |
 | `pip_packages` | `["prefect"]` | Installed in the session before the run. Pin the Prefect version to match your server |

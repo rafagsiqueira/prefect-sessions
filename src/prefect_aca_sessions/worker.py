@@ -1,5 +1,6 @@
 import asyncio
 import json
+import os
 
 import anyio
 import anyio.abc
@@ -10,7 +11,7 @@ from prefect.workers.base import (
     BaseWorker,
     BaseWorkerResult,
 )
-from pydantic import Field
+from pydantic import Field, model_validator
 
 from prefect_aca_sessions.client import SessionsClient
 from prefect_aca_sessions.snippets import build_poll_code, build_start_code
@@ -18,16 +19,19 @@ from prefect_aca_sessions.snippets import build_poll_code, build_start_code
 DEFAULT_API_VERSION = "2025-10-02-preview"
 DEFAULT_POLL_INTERVAL_SECONDS = 10
 FAILURE_EXIT_CODE = -1
+POOL_MANAGEMENT_ENDPOINT_ENV_VAR = "ACA_SESSIONS_POOL_MANAGEMENT_ENDPOINT"
 
 
 class ACASessionsJobConfiguration(BaseJobConfiguration):
     """Job configuration for flow runs executed in an ACA code interpreter session."""
 
-    pool_management_endpoint: str = Field(
+    pool_management_endpoint: str | None = Field(
+        default=None,
         description=(
             "Management endpoint of the code interpreter session pool, e.g. "
             "https://<region>.dynamicsessions.io/subscriptions/<id>/resourceGroups/<rg>"
-            "/sessionPools/<pool>"
+            f"/sessionPools/<pool>. Defaults to ${POOL_MANAGEMENT_ENDPOINT_ENV_VAR} "
+            "on the worker."
         ),
         json_schema_extra=dict(template="{{ pool_management_endpoint }}"),
     )
@@ -58,10 +62,27 @@ class ACASessionsJobConfiguration(BaseJobConfiguration):
         json_schema_extra=dict(template="{{ delete_session_on_completion }}"),
     )
 
+    @model_validator(mode="after")
+    def _resolve_pool_management_endpoint(self):
+        # Resolved in the worker process, so the endpoint can be set once on the worker host.
+        self.pool_management_endpoint = self.pool_management_endpoint or os.environ.get(
+            POOL_MANAGEMENT_ENDPOINT_ENV_VAR
+        )
+        if not self.pool_management_endpoint:
+            raise ValueError(
+                "pool_management_endpoint is not set: provide it as a job variable or set "
+                f"{POOL_MANAGEMENT_ENDPOINT_ENV_VAR} in the worker's environment."
+            )
+        return self
+
 
 class ACASessionsVariables(BaseVariables):
-    pool_management_endpoint: str = Field(
-        description="Management endpoint of the code interpreter session pool.",
+    pool_management_endpoint: str | None = Field(
+        default=None,
+        description=(
+            "Management endpoint of the code interpreter session pool. "
+            f"Defaults to ${POOL_MANAGEMENT_ENDPOINT_ENV_VAR} on the worker."
+        ),
     )
     api_version: str = Field(default=DEFAULT_API_VERSION, description="Sessions API version.")
     session_identifier: str | None = Field(
