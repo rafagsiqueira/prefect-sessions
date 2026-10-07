@@ -125,9 +125,23 @@ class ACASessionsWorker(BaseWorker):
         async with SessionsClient(
             configuration.pool_management_endpoint, configuration.api_version
         ) as client:
+            started = False
             try:
-                exit_code = await self._execute(client, identifier, configuration, logger, task_status)
+                await client.execute(
+                    identifier,
+                    build_start_code(
+                        configuration.command or "", configuration.env, configuration.pip_packages
+                    ),
+                )
+                started = True
+                logger.info("Started flow run process in session %s", identifier)
+                if task_status is not None:
+                    task_status.started(identifier)
+                exit_code = await self._wait_for_exit(client, identifier, configuration, logger)
             except Exception:
+                if not started:
+                    # Let the base worker mark the run as crashed with this error.
+                    raise
                 logger.exception("Flow run failed in session %s", identifier)
                 exit_code = FAILURE_EXIT_CODE
             finally:
@@ -136,17 +150,7 @@ class ACASessionsWorker(BaseWorker):
 
         return ACASessionsWorkerResult(status_code=exit_code, identifier=identifier)
 
-    async def _execute(self, client, identifier, configuration, logger, task_status) -> int:
-        await client.execute(
-            identifier,
-            build_start_code(
-                configuration.command or "", configuration.env, configuration.pip_packages
-            ),
-        )
-        logger.info("Started flow run process in session %s", identifier)
-        if task_status is not None:
-            task_status.started(identifier)
-
+    async def _wait_for_exit(self, client, identifier, configuration, logger) -> int:
         offset = 0
         more = False
         while True:
