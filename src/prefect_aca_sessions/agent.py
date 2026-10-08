@@ -4,7 +4,7 @@ Custom container session pools proxy requests to the container's HTTP port, so t
 cannot execute code directly. This agent exposes the two operations the worker needs:
 
 - ``POST /start`` with ``{"command": str, "env": {str: str}}`` starts a detached process.
-- ``GET /poll?offset=N`` returns ``{"log", "offset", "more", "exit_code"}``.
+- ``GET /poll?offset=N`` returns ``{"log", "offset", "more", "started", "exit_code"}``.
 
 ``GET /``, ``/health``, ``/healthz`` and ``/ready`` return 200 for container probes.
 
@@ -65,9 +65,15 @@ class RunState:
     def poll(self, offset: int) -> dict:
         # read the exit code first so a run finishing mid-poll never loses its last log lines
         with self._lock:
-            exit_code = self._exit_code
+            started, exit_code = self._started, self._exit_code
         if not os.path.exists(self._log_path):
-            return {"log": "", "offset": offset, "more": False, "exit_code": exit_code}
+            return {
+                "log": "",
+                "offset": offset,
+                "more": False,
+                "started": started,
+                "exit_code": exit_code,
+            }
         with open(self._log_path, "rb") as f:
             f.seek(offset)
             chunk = f.read(MAX_LOG_CHUNK_BYTES)
@@ -78,6 +84,7 @@ class RunState:
             "log": chunk.decode("utf-8", "replace"),
             "offset": offset + len(chunk),
             "more": more,
+            "started": started,
             "exit_code": exit_code,
         }
 

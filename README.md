@@ -125,8 +125,9 @@ pull steps and `env`.
 
 ## Known limitations
 
-- Cancelling a flow run does not stop the process in the session (`kill_infrastructure` is not
-  implemented); let the session expire to stop it.
+- Cancelling a flow run that is still pending stops its session through the pool's
+  `stopSession` API (`2025-02-02-preview`). A flow run that is already running is cancelled by
+  `prefect flow-run execute` inside the session; the session itself then ends at cooldown.
 - Sessions are not deleted by the worker; they end when the pool's cooldown period elapses.
 - A session runs one process: starting a second one in the same session is rejected.
 - Session lifetime and idle limits are set on the pool and apply to long flow runs.

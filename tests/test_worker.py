@@ -4,22 +4,27 @@ from uuid import uuid4
 
 import pytest
 from prefect.client.schemas.objects import FlowRun
+from prefect.exceptions import InfrastructureNotFound
 
 from prefect_aca_sessions import ACASessionsJobConfiguration, ACASessionsWorker
 from prefect_aca_sessions import worker as worker_module
-from prefect_aca_sessions.client import SessionExecutionError
+from prefect_aca_sessions.client import SessionExecutionError, SessionNotFoundError
 
 
 class FakeClient:
     def __init__(self, polls):
         self.polls = list(polls)
         self.started = []
+        self.stopped = []
 
     async def start(self, identifier, command, env):
         self.started.append((identifier, command, env))
 
     async def poll(self, identifier, offset):
         return self.polls.pop(0)
+
+    async def stop(self, identifier):
+        self.stopped.append(identifier)
 
     async def __aenter__(self):
         return self
@@ -99,3 +104,48 @@ async def test_run_raises_when_process_cannot_start(monkeypatch):
 
     with pytest.raises(SessionExecutionError, match="HTTP 400"):
         await worker.run(flow_run, config)
+
+
+async def test_run_fails_when_session_was_replaced(monkeypatch):
+    fake = FakeClient(
+        [
+            {"log": "a\n", "offset": 2, "more": False, "started": True, "exit_code": None},
+            {"log": "", "offset": 0, "more": False, "started": False, "exit_code": None},
+        ]
+    )
+    monkeypatch.setattr(worker_module, "SessionsClient", lambda *a, **k: fake)
+    real_sleep = asyncio.sleep
+    monkeypatch.setattr(worker_module.asyncio, "sleep", lambda s: real_sleep(0))
+    config = ACASessionsJobConfiguration(pool_management_endpoint="https://x", command="echo hi")
+    flow_run = SimpleNamespace(id=uuid4(), name="r")
+    worker = ACASessionsWorker.__new__(ACASessionsWorker)
+    monkeypatch.setattr(worker, "get_flow_run_logger", lambda fr: __import__("logging").getLogger("t"), raising=False)
+
+    result = await worker.run(flow_run, config)
+
+    assert result.status_code == worker_module.FAILURE_EXIT_CODE
+    assert fake.polls == []
+
+
+async def test_kill_infrastructure_stops_the_session(monkeypatch):
+    fake = FakeClient([])
+    monkeypatch.setattr(worker_module, "SessionsClient", lambda *a, **k: fake)
+    config = ACASessionsJobConfiguration(pool_management_endpoint="https://x", command="echo hi")
+    worker = ACASessionsWorker.__new__(ACASessionsWorker)
+
+    await worker.kill_infrastructure("session-1", config)
+
+    assert fake.stopped == ["session-1"]
+
+
+async def test_kill_infrastructure_raises_not_found_for_unknown_session(monkeypatch):
+    class MissingClient(FakeClient):
+        async def stop(self, identifier):
+            raise SessionNotFoundError("HTTP 404")
+
+    monkeypatch.setattr(worker_module, "SessionsClient", lambda *a, **k: MissingClient([]))
+    config = ACASessionsJobConfiguration(pool_management_endpoint="https://x", command="echo hi")
+    worker = ACASessionsWorker.__new__(ACASessionsWorker)
+
+    with pytest.raises(InfrastructureNotFound):
+        await worker.kill_infrastructure("session-1", config)

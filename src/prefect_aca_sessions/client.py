@@ -8,10 +8,15 @@ from azure.identity.aio import DefaultAzureCredential
 
 SESSIONS_TOKEN_SCOPE = "https://dynamicsessions.io/.default"
 REQUEST_TIMEOUT_SECONDS = 300.0
+STOP_SESSION_API_VERSION = "2025-02-02-preview"
 
 
 class SessionExecutionError(RuntimeError):
     """The session pool or the agent in the session rejected a request."""
+
+
+class SessionNotFoundError(SessionExecutionError):
+    """The session pool has no session with the requested identifier."""
 
 
 class SessionsClient:
@@ -37,7 +42,9 @@ class SessionsClient:
         await self._http.aclose()
         await self._credential.close()
 
-    async def _request(self, method: str, path: str, identifier: str, **kwargs: Any) -> Any:
+    async def _request(
+        self, method: str, path: str, identifier: str, **kwargs: Any
+    ) -> httpx.Response:
         token = await self._credential.get_token(SESSIONS_TOKEN_SCOPE)
         response = await self._http.request(
             method,
@@ -47,10 +54,15 @@ class SessionsClient:
             **kwargs,
         )
         if response.is_error:
-            raise SessionExecutionError(
+            error = (
+                SessionNotFoundError
+                if response.status_code == 404
+                else SessionExecutionError
+            )
+            raise error(
                 f"Session {method} {path} returned HTTP {response.status_code}: {response.text}"
             )
-        return response.json()
+        return response
 
     async def start(self, identifier: str, command: str, env: dict[str, str]) -> None:
         """Start `command` as a detached process in the session."""
@@ -59,6 +71,16 @@ class SessionsClient:
         )
 
     async def poll(self, identifier: str, offset: int) -> dict[str, Any]:
-        """New log text from `offset`, the next offset, whether more log remains and the
-        exit code (or None while running)."""
-        return await self._request("GET", "/poll", identifier, params={"offset": offset})
+        """New log text from `offset`, the next offset, whether more log remains, whether a
+        process was started and its exit code (or None while running)."""
+        response = await self._request("GET", "/poll", identifier, params={"offset": offset})
+        return response.json()
+
+    async def stop(self, identifier: str) -> None:
+        """Stop the session, ending every process in it. Handled by the pool, not the agent."""
+        await self._request(
+            "POST",
+            "/.management/stopSession",
+            identifier,
+            params={"api-version": STOP_SESSION_API_VERSION},
+        )

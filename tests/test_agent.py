@@ -43,11 +43,18 @@ def test_runs_command_with_env_and_reports_output_and_exit_code(base_url):
     result = wait_for_exit(base_url)
 
     assert result["log"] == "hi\n"
+    assert result["started"] is True
     assert result["exit_code"] == 3
 
 
 def test_poll_before_start_has_no_exit_code(base_url):
-    assert poll(base_url) == {"log": "", "offset": 0, "more": False, "exit_code": None}
+    assert poll(base_url) == {
+        "log": "",
+        "offset": 0,
+        "more": False,
+        "started": False,
+        "exit_code": None,
+    }
 
 
 def test_second_start_is_rejected(base_url):

@@ -4,6 +4,7 @@ import os
 import anyio
 import anyio.abc
 from prefect.client.schemas.objects import FlowRun
+from prefect.exceptions import InfrastructureNotFound
 from prefect.workers.base import (
     BaseJobConfiguration,
     BaseVariables,
@@ -12,7 +13,7 @@ from prefect.workers.base import (
 )
 from pydantic import Field, model_validator
 
-from prefect_aca_sessions.client import SessionsClient
+from prefect_aca_sessions.client import SessionNotFoundError, SessionsClient
 
 DEFAULT_POLL_INTERVAL_SECONDS = 10
 FAILURE_EXIT_CODE = -1
@@ -116,8 +117,26 @@ class ACASessionsWorker(BaseWorker):
             if not more:
                 await asyncio.sleep(configuration.poll_interval_seconds)
             poll = await client.poll(identifier, offset)
+            if not poll.get("started", True):
+                # The session was stopped (e.g. by kill_infrastructure) and the pool handed
+                # this identifier a fresh session that never ran the flow.
+                logger.error("Session %s no longer runs the flow run process", identifier)
+                return FAILURE_EXIT_CODE
             offset, more = poll["offset"], poll["more"]
             if poll["log"]:
                 logger.info(poll["log"].rstrip())
             if poll["exit_code"] is not None and not more:
                 return poll["exit_code"]
+
+    async def kill_infrastructure(
+        self,
+        infrastructure_pid: str,
+        configuration: ACASessionsJobConfiguration,
+        grace_seconds: int = 30,
+    ) -> None:
+        """Stop the flow run's session. The pool ends it at once, so `grace_seconds` is unused."""
+        async with SessionsClient(configuration.pool_management_endpoint) as client:
+            try:
+                await client.stop(infrastructure_pid)
+            except SessionNotFoundError as exc:
+                raise InfrastructureNotFound(f"Session {infrastructure_pid} not found") from exc

@@ -4,7 +4,11 @@ from types import SimpleNamespace
 import httpx
 import pytest
 
-from prefect_aca_sessions.client import SessionExecutionError, SessionsClient
+from prefect_aca_sessions.client import (
+    SessionExecutionError,
+    SessionNotFoundError,
+    SessionsClient,
+)
 
 ENDPOINT = "https://eastus.dynamicsessions.io/subscriptions/s/resourceGroups/r/sessionPools/p"
 
@@ -67,3 +71,26 @@ async def test_request_raises_on_http_error():
     async with make_client(lambda r: httpx.Response(403, text="nope")) as client:
         with pytest.raises(SessionExecutionError, match="403"):
             await client.poll("abc", 0)
+
+
+async def test_stop_calls_the_pool_stop_session_api():
+    seen = {}
+
+    def handler(request):
+        seen["request"] = request
+        return httpx.Response(200, text="Session abc in session pool p stopped.")
+
+    async with make_client(handler) as client:
+        await client.stop("abc")
+
+    request = seen["request"]
+    assert request.method == "POST"
+    assert request.url.path.endswith("/sessionPools/p/.management/stopSession")
+    assert request.url.params["identifier"] == "abc"
+    assert request.url.params["api-version"] == "2025-02-02-preview"
+
+
+async def test_request_raises_not_found_on_404():
+    async with make_client(lambda r: httpx.Response(404, text="no session")) as client:
+        with pytest.raises(SessionNotFoundError, match="404"):
+            await client.stop("abc")
