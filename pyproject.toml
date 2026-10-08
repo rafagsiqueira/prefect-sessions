@@ -1,6 +1,6 @@
 [project]
 name = "prefect-aca-sessions"
-version = "2.0.0"
+version = "2.0.1"
 description = "Prefect worker that runs flow runs in Azure Container Apps dynamic sessions"
 readme = "README.md"
 authors = [

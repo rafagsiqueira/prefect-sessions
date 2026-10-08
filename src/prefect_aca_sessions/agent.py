@@ -6,6 +6,8 @@ cannot execute code directly. This agent exposes the two operations the worker n
 - ``POST /start`` with ``{"command": str, "env": {str: str}}`` starts a detached process.
 - ``GET /poll?offset=N`` returns ``{"log", "offset", "more", "exit_code"}``.
 
+``GET /``, ``/health``, ``/healthz`` and ``/ready`` return 200 for container probes.
+
 Run it as the image entrypoint: ``python -m prefect_aca_sessions.agent`` (port 8080).
 """
 
@@ -18,6 +20,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, urlparse
 
 DEFAULT_PORT = 8080
+HEALTH_PATHS = frozenset({"/", "/health", "/healthz", "/ready"})
 # Bytes of log returned per poll.
 MAX_LOG_CHUNK_BYTES = 65536
 MAX_UTF8_CHAR_BYTES = 4
@@ -103,6 +106,8 @@ def make_handler(state: RunState) -> type[BaseHTTPRequestHandler]:
 
         def do_GET(self) -> None:
             url = urlparse(self.path)
+            if url.path in HEALTH_PATHS:
+                return self._reply(200, {"status": "ok"})
             if url.path == "/poll":
                 try:
                     offset = int(parse_qs(url.query).get("offset", ["0"])[0])

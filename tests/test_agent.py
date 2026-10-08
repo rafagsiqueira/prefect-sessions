@@ -64,3 +64,8 @@ def test_invalid_start_body_is_rejected(base_url):
         post_start(base_url, {"env": {}})
 
     assert exc.value.code == 400
+
+
+@pytest.mark.parametrize("path", ["/", "/health", "/healthz", "/ready"])
+def test_health_paths_return_ok_for_container_probes(base_url, path):
+    assert json.load(urlopen(f"{base_url}{path}")) == {"status": "ok"}
