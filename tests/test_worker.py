@@ -7,23 +7,19 @@ from prefect.client.schemas.objects import FlowRun
 
 from prefect_aca_sessions import ACASessionsJobConfiguration, ACASessionsWorker
 from prefect_aca_sessions import worker as worker_module
-from prefect_aca_sessions.client import ExecutionResult, SessionExecutionError
+from prefect_aca_sessions.client import SessionExecutionError
 
 
 class FakeClient:
     def __init__(self, polls):
         self.polls = list(polls)
-        self.calls = []
-        self.deleted = []
+        self.started = []
 
-    async def execute(self, identifier, code):
-        self.calls.append(identifier)
-        if len(self.calls) == 1:
-            return ExecutionResult("Succeeded", "123\n", "")
-        return ExecutionResult("Succeeded", self.polls.pop(0), "")
+    async def start(self, identifier, command, env):
+        self.started.append((identifier, command, env))
 
-    async def delete_session(self, identifier):
-        self.deleted.append(identifier)
+    async def poll(self, identifier, offset):
+        return self.polls.pop(0)
 
     async def __aenter__(self):
         return self
@@ -66,12 +62,12 @@ def test_missing_endpoint_raises(monkeypatch):
         ACASessionsJobConfiguration(command="echo hi")
 
 
-async def test_run_streams_until_exit_and_deletes_session(monkeypatch):
+async def test_run_streams_until_exit(monkeypatch):
     fake = FakeClient(
         [
-            '{"log": "a\\n", "offset": 2, "more": false, "exit_code": null}',
-            '{"log": "b", "offset": 3, "more": true, "exit_code": 0}',
-            '{"log": "c", "offset": 4, "more": false, "exit_code": 0}',
+            {"log": "a\n", "offset": 2, "more": False, "exit_code": None},
+            {"log": "b", "offset": 3, "more": True, "exit_code": 0},
+            {"log": "c", "offset": 4, "more": False, "exit_code": 0},
         ]
     )
     monkeypatch.setattr(worker_module, "SessionsClient", lambda *a, **k: fake)
@@ -87,16 +83,15 @@ async def test_run_streams_until_exit_and_deletes_session(monkeypatch):
     assert result.status_code == 0
     assert fake.polls == []  # kept polling until the remaining log was drained
     assert result.identifier == str(flow_run.id)
-    assert fake.deleted == [str(flow_run.id)]
+    assert fake.started[0][:2] == (str(flow_run.id), "echo hi")
 
 
-async def test_run_raises_when_process_cannot_start_and_deletes_session(monkeypatch):
+async def test_run_raises_when_process_cannot_start(monkeypatch):
     class FailingClient(FakeClient):
-        async def execute(self, identifier, code):
+        async def start(self, identifier, command, env):
             raise SessionExecutionError("HTTP 400")
 
-    fake = FailingClient([])
-    monkeypatch.setattr(worker_module, "SessionsClient", lambda *a, **k: fake)
+    monkeypatch.setattr(worker_module, "SessionsClient", lambda *a, **k: FailingClient([]))
     config = ACASessionsJobConfiguration(pool_management_endpoint="https://x", command="echo hi")
     flow_run = SimpleNamespace(id=uuid4(), name="r")
     worker = ACASessionsWorker.__new__(ACASessionsWorker)
@@ -104,5 +99,3 @@ async def test_run_raises_when_process_cannot_start_and_deletes_session(monkeypa
 
     with pytest.raises(SessionExecutionError, match="HTTP 400"):
         await worker.run(flow_run, config)
-
-    assert fake.deleted == [str(flow_run.id)]

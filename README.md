@@ -1,35 +1,37 @@
 # prefect-aca-sessions
 
 A Prefect worker that runs flow runs in
-[Azure Container Apps dynamic sessions](https://learn.microsoft.com/en-us/azure/container-apps/sessions-code-interpreter)
-(code interpreter session pools). Worker type: `azure-container-apps-sessions`.
+[Azure Container Apps dynamic sessions](https://learn.microsoft.com/en-us/azure/container-apps/sessions-custom-container)
+(**custom container** session pools). Worker type: `azure-container-apps-sessions`.
 
 > Status: unit-tested only. It has not yet been verified against a real session pool.
 
 ## How it works
 
-The worker is a long-running process that polls a Prefect work pool. For each flow run it:
+Custom container pools have no code execution endpoint. The pool management endpoint instead
+proxies requests to an HTTP server in your container, so the image runs a small agent
+(`python -m prefect_aca_sessions.agent`, port 8080) that this worker talks to.
+
+For each flow run the worker:
 
 1. Authenticates to the pool's management endpoint with a Microsoft Entra token
    (`DefaultAzureCredential`, audience `https://dynamicsessions.io`).
-2. Starts `prefect flow-run execute` as a detached process inside a session (after
-   `pip install`-ing `pip_packages`). The session identifier defaults to the flow run ID.
-3. Polls the session, forwards the process output to the flow run logs, and reports the exit code.
-4. Deletes the session (unless `delete_session_on_completion` is `false`).
-
-A single `/executions` call is limited to 220 seconds, which is why the flow runs as a
-background process that is polled rather than inside one call.
+2. Calls `POST /start` on the session (identifier defaults to the flow run ID), which starts
+   `prefect flow-run execute` as a detached process in the container.
+3. Calls `GET /poll` until the process exits, forwarding its output to the flow run logs.
 
 ## Prerequisites
 
 - A self-hosted Prefect server reachable from **both** the worker and the sessions.
-- An Azure Container Apps **code interpreter session pool**
-  (`az containerapp sessionpool create --container-type PythonLTS ...`). Note its
-  *pool management endpoint*:
+- A container image with `prefect` and `prefect-aca-sessions` installed, whose entrypoint is
+  `python -m prefect_aca_sessions.agent` (e.g. `FROM python:3.12-slim`,
+  `RUN pip install prefect prefect-aca-sessions`). Pin the Prefect version to match your server.
+- An Azure Container Apps **custom container session pool**
+  (`az containerapp sessionpool create --container-type CustomContainer --target-port 8080 ...`).
+  Note its *pool management endpoint*:
   `az containerapp sessionpool show -n <pool> -g <rg> --query properties.poolManagementEndpoint -o tsv`
 - An identity for the worker with the **Azure ContainerApps Session Executor** role on the pool.
-- Sessions with network egress to your Prefect API (the session pool's network status must
-  be `EgressEnabled`) and to PyPI, or a pool with the packages you need already available.
+- Sessions with network egress to your Prefect API.
 - Python 3.12+ and [uv](https://docs.astral.sh/uv/).
 
 ## 1. Install the worker
@@ -97,13 +99,11 @@ if __name__ == "__main__":
     ).deploy(
         name="hello-aca",
         work_pool_name="aca-sessions",
-        job_variables={
-            "pip_packages": ["prefect", "pandas"],
-        },
+        job_variables={"poll_interval_seconds": 5},
     )
 ```
 
-The session has to fetch the flow code itself (git source, or a pull step), because nothing
+The container has to fetch the flow code itself (git source, or a pull step), because nothing
 is shared with the worker's filesystem. Add private-repo credentials via the deployment's
 pull steps and `env`.
 
@@ -112,11 +112,8 @@ pull steps and `env`.
 | Variable | Default | Description |
 | --- | --- | --- |
 | `pool_management_endpoint` | `$ACA_SESSIONS_POOL_MANAGEMENT_ENDPOINT` on the worker | Session pool management endpoint URL. A flow run fails if neither is set |
-| `api_version` | `2025-10-02-preview` | Sessions data-plane API version |
 | `session_identifier` | flow run ID | Session to run in. A fixed value reuses one session across runs, so runs can see each other's files |
-| `pip_packages` | `["prefect"]` | Installed in the session before the run. Pin the Prefect version to match your server |
 | `poll_interval_seconds` | `10` | Seconds between status polls |
-| `delete_session_on_completion` | `true` | Delete the session after the run |
 | `env` | `{}` | Extra environment variables for the flow run process |
 | `command` | `prefect flow-run execute` | Command run in the session |
 
@@ -129,7 +126,9 @@ pull steps and `env`.
 ## Known limitations
 
 - Cancelling a flow run does not stop the process in the session (`kill_infrastructure` is not
-  implemented); delete the session to stop it.
+  implemented); let the session expire to stop it.
+- Sessions are not deleted by the worker; they end when the pool's cooldown period elapses.
+- A session runs one process: starting a second one in the same session is rejected.
 - Session lifetime and idle limits are set on the pool and apply to long flow runs.
 
 ## Development
