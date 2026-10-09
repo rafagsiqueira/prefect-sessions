@@ -2,6 +2,7 @@ import asyncio
 import os
 
 import anyio
+import httpx
 import anyio.abc
 from prefect.client.schemas.objects import FlowRun
 from prefect.exceptions import InfrastructureNotFound
@@ -13,7 +14,11 @@ from prefect.workers.base import (
 )
 from pydantic import Field, model_validator
 
-from prefect_aca_sessions.client import SessionNotFoundError, SessionsClient
+from prefect_aca_sessions.client import (
+    SessionExecutionError,
+    SessionNotFoundError,
+    SessionsClient,
+)
 
 DEFAULT_POLL_INTERVAL_SECONDS = 10
 FAILURE_EXIT_CODE = -1
@@ -44,6 +49,14 @@ class ACASessionsJobConfiguration(BaseJobConfiguration):
         description="Seconds between checks of the flow run process.",
         json_schema_extra=dict(template="{{ poll_interval_seconds }}"),
     )
+    stop_session_on_exit: bool = Field(
+        default=True,
+        description=(
+            "Stop the session once the flow run process exits, instead of waiting for the "
+            "pool's cooldown."
+        ),
+        json_schema_extra=dict(template="{{ stop_session_on_exit }}"),
+    )
 
     @model_validator(mode="after")
     def _resolve_pool_management_endpoint(self):
@@ -72,6 +85,13 @@ class ACASessionsVariables(BaseVariables):
     )
     poll_interval_seconds: int = Field(
         default=DEFAULT_POLL_INTERVAL_SECONDS, ge=1, description="Seconds between status checks."
+    )
+    stop_session_on_exit: bool = Field(
+        default=True,
+        description=(
+            "Stop the session once the flow run process exits. Disable to keep it until the "
+            "pool's cooldown, e.g. to inspect its files."
+        ),
     )
 
 
@@ -107,8 +127,19 @@ class ACASessionsWorker(BaseWorker):
             except Exception:
                 logger.exception("Flow run failed in session %s", identifier)
                 exit_code = FAILURE_EXIT_CODE
+            else:
+                # Only once the process is known to have exited: a lost connection or a
+                # worker shutdown must not stop a flow run that may still be running.
+                if configuration.stop_session_on_exit:
+                    await self._stop_session(client, identifier, logger)
 
         return ACASessionsWorkerResult(status_code=exit_code, identifier=identifier)
+
+    async def _stop_session(self, client, identifier, logger) -> None:
+        try:
+            await client.stop(identifier)
+        except (SessionExecutionError, httpx.HTTPError) as exc:
+            logger.warning("Could not stop session %s, it ends at cooldown: %s", identifier, exc)
 
     async def _wait_for_exit(self, client, identifier, configuration, logger) -> int:
         offset = 0

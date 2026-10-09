@@ -89,6 +89,7 @@ async def test_run_streams_until_exit(monkeypatch):
     assert fake.polls == []  # kept polling until the remaining log was drained
     assert result.identifier == str(flow_run.id)
     assert fake.started[0][:2] == (str(flow_run.id), "echo hi")
+    assert fake.stopped == [str(flow_run.id)]
 
 
 async def test_run_raises_when_process_cannot_start(monkeypatch):
@@ -149,3 +150,49 @@ async def test_kill_infrastructure_raises_not_found_for_unknown_session(monkeypa
 
     with pytest.raises(InfrastructureNotFound):
         await worker.kill_infrastructure("session-1", config)
+
+
+async def run_to_exit(monkeypatch, fake, **config):
+    monkeypatch.setattr(worker_module, "SessionsClient", lambda *a, **k: fake)
+    real_sleep = asyncio.sleep
+    monkeypatch.setattr(worker_module.asyncio, "sleep", lambda s: real_sleep(0))
+    config = ACASessionsJobConfiguration(
+        pool_management_endpoint="https://x", command="echo hi", **config
+    )
+    worker = ACASessionsWorker.__new__(ACASessionsWorker)
+    monkeypatch.setattr(worker, "get_flow_run_logger", lambda fr: __import__("logging").getLogger("t"), raising=False)
+    return await worker.run(SimpleNamespace(id=uuid4(), name="r"), config)
+
+
+EXITED = {"log": "", "offset": 0, "more": False, "started": True, "exit_code": 0}
+
+
+async def test_run_keeps_session_when_stop_is_disabled(monkeypatch):
+    fake = FakeClient([EXITED])
+
+    await run_to_exit(monkeypatch, fake, stop_session_on_exit=False)
+
+    assert fake.stopped == []
+
+
+async def test_run_keeps_session_when_polling_fails(monkeypatch):
+    class LostClient(FakeClient):
+        async def poll(self, identifier, offset):
+            raise SessionExecutionError("HTTP 502")
+
+    fake = LostClient([])
+
+    result = await run_to_exit(monkeypatch, fake)
+
+    assert result.status_code == worker_module.FAILURE_EXIT_CODE
+    assert fake.stopped == []  # the flow may still be running
+
+
+async def test_run_succeeds_when_stop_fails(monkeypatch):
+    class StuckClient(FakeClient):
+        async def stop(self, identifier):
+            raise SessionExecutionError("HTTP 500")
+
+    result = await run_to_exit(monkeypatch, StuckClient([EXITED]))
+
+    assert result.status_code == 0

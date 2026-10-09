@@ -112,8 +112,9 @@ pull steps and `env`.
 | Variable | Default | Description |
 | --- | --- | --- |
 | `pool_management_endpoint` | `$ACA_SESSIONS_POOL_MANAGEMENT_ENDPOINT` on the worker | Session pool management endpoint URL. A flow run fails if neither is set |
-| `session_identifier` | flow run ID | Session to run in. A fixed value reuses one session across runs, so runs can see each other's files |
+| `session_identifier` | flow run ID | Session to run in. A session runs a single flow run process, so a fixed value works for one run only |
 | `poll_interval_seconds` | `10` | Seconds between status polls |
+| `stop_session_on_exit` | `true` | Stop the session once the flow run process exits, instead of waiting for the pool's cooldown |
 | `env` | `{}` | Extra environment variables for the flow run process |
 | `command` | `prefect flow-run execute` | Command run in the session |
 
@@ -127,8 +128,9 @@ pull steps and `env`.
 
 - Cancelling a flow run that is still pending stops its session through the pool's
   `stopSession` API (`2025-02-02-preview`). A flow run that is already running is cancelled by
-  `prefect flow-run execute` inside the session; the session itself then ends at cooldown.
-- Sessions are not deleted by the worker; they end when the pool's cooldown period elapses.
+  `prefect flow-run execute` inside the session.
+- The worker stops a session only after it sees the flow run process exit. If the worker loses
+  track of a run (it restarts, or polling fails), the session ends at the pool's cooldown.
 - A session runs one process: starting a second one in the same session is rejected.
 - Session lifetime and idle limits are set on the pool and apply to long flow runs.
 
