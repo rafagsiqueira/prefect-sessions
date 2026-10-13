@@ -7,6 +7,7 @@ import pytest
 from prefect_aca_sessions import client as client_module
 from prefect_aca_sessions.client import (
     SessionExecutionError,
+    SessionGatewayError,
     SessionNotFoundError,
     SessionPoolBusyError,
     SessionsClient,
@@ -154,6 +155,39 @@ async def test_start_gives_up_after_max_attempts(sleeps):
 
     assert len(calls) == client_module.START_MAX_ATTEMPTS
     assert len(sleeps) == client_module.START_MAX_ATTEMPTS - 1
+
+
+@pytest.mark.parametrize("status_code", [502, 503, 504])
+async def test_start_retries_gateway_errors(sleeps, status_code):
+    responses = iter([httpx.Response(status_code)] * 2 + [httpx.Response(200, json={})])
+
+    async with make_client(lambda r: next(responses)) as client:
+        await client.start("abc", "echo hi", {})
+
+    assert len(sleeps) == 2
+
+
+async def test_start_gives_up_on_persistent_gateway_errors(sleeps):
+    async with make_client(lambda r: httpx.Response(502)) as client:
+        with pytest.raises(SessionGatewayError, match="502"):
+            await client.start("abc", "echo hi", {})
+
+    assert len(sleeps) == client_module.START_MAX_ATTEMPTS - 1
+
+
+async def test_start_succeeds_when_a_retry_finds_the_process_started(sleeps):
+    responses = iter([httpx.Response(502), httpx.Response(409, json={"error": "started"})])
+
+    async with make_client(lambda r: next(responses)) as client:
+        await client.start("abc", "echo hi", {})
+
+
+async def test_start_raises_conflict_without_a_prior_gateway_error(sleeps):
+    responses = iter([httpx.Response(429), httpx.Response(409, json={"error": "started"})])
+
+    async with make_client(lambda r: next(responses)) as client:
+        with pytest.raises(SessionExecutionError, match="409"):
+            await client.start("abc", "echo hi", {})
 
 
 async def test_start_does_not_retry_other_errors(sleeps):

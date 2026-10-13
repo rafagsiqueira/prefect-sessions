@@ -14,22 +14,38 @@ STOP_SESSION_API_VERSION = "2025-02-02-preview"
 START_MAX_ATTEMPTS = 8
 START_BACKOFF_BASE_SECONDS = 1.0
 START_BACKOFF_MAX_SECONDS = 60.0
+GATEWAY_ERROR_STATUS_CODES = frozenset({502, 503, 504})
 
 
 class SessionExecutionError(RuntimeError):
     """The session pool or the agent in the session rejected a request."""
+
+    def __init__(self, message: str, status_code: int | None = None) -> None:
+        super().__init__(message)
+        self.status_code = status_code
 
 
 class SessionNotFoundError(SessionExecutionError):
     """The session pool has no session with the requested identifier."""
 
 
-class SessionPoolBusyError(SessionExecutionError):
+class SessionUnavailableError(SessionExecutionError):
+    """The session pool could not serve the request for now and it may be retried."""
+
+    def __init__(
+        self, message: str, status_code: int | None = None, retry_after: float | None = None
+    ) -> None:
+        super().__init__(message, status_code)
+        self.retry_after = retry_after
+
+
+class SessionPoolBusyError(SessionUnavailableError):
     """The session pool could not allocate a session (HTTP 429), e.g. it is at max sessions."""
 
-    def __init__(self, message: str, retry_after: float | None = None) -> None:
-        super().__init__(message)
-        self.retry_after = retry_after
+
+class SessionGatewayError(SessionUnavailableError):
+    """The pool could not reach the agent in the session (HTTP 502, 503 or 504), e.g. while
+    its container is still starting. The agent may still have received the request."""
 
 
 def _retry_after_seconds(response: httpx.Response) -> float | None:
@@ -77,33 +93,45 @@ class SessionsClient:
             message = (
                 f"Session {method} {path} returned HTTP {response.status_code}: {response.text}"
             )
-            if response.status_code == 429:
-                raise SessionPoolBusyError(message, _retry_after_seconds(response))
-            if response.status_code == 404:
-                raise SessionNotFoundError(message)
-            raise SessionExecutionError(message)
+            status_code = response.status_code
+            if status_code == 429:
+                raise SessionPoolBusyError(message, status_code, _retry_after_seconds(response))
+            if status_code in GATEWAY_ERROR_STATUS_CODES:
+                raise SessionGatewayError(message, status_code, _retry_after_seconds(response))
+            if status_code == 404:
+                raise SessionNotFoundError(message, status_code)
+            raise SessionExecutionError(message, status_code)
         return response
 
     async def start(self, identifier: str, command: str, env: dict[str, str]) -> None:
         """Start `command` as a detached process in the session.
 
         The first request for an identifier allocates its session. While the pool cannot
-        allocate one (HTTP 429) this retries with exponential backoff and jitter, honoring
-        `Retry-After`; a 429 is rejected by the pool, so the agent never saw the request.
+        allocate one (HTTP 429) or reach its agent (HTTP 502-504) this retries with
+        exponential backoff and jitter, honoring `Retry-After`. Retrying cannot start a
+        second process: the agent accepts a single start per session.
         """
+        gateway_failed = False
         for attempt in range(START_MAX_ATTEMPTS):
             try:
                 await self._request(
                     "POST", "/start", identifier, json={"command": command, "env": env}
                 )
                 return
-            except SessionPoolBusyError as exc:
+            except SessionUnavailableError as exc:
                 if attempt == START_MAX_ATTEMPTS - 1:
                     raise
+                gateway_failed = gateway_failed or isinstance(exc, SessionGatewayError)
                 backoff = min(
                     START_BACKOFF_BASE_SECONDS * 2**attempt, START_BACKOFF_MAX_SECONDS
                 )
                 await asyncio.sleep(exc.retry_after or random.uniform(backoff / 2, backoff))
+            except SessionExecutionError as exc:
+                # The agent got the start that a gateway error hid from us, so the process
+                # is running and the agent rejects the retry as a second start.
+                if gateway_failed and exc.status_code == 409:
+                    return
+                raise
 
     async def poll(self, identifier: str, offset: int) -> dict[str, Any]:
         """New log text from `offset`, the next offset, whether more log remains, whether a
