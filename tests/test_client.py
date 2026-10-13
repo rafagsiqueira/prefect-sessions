@@ -4,9 +4,11 @@ from types import SimpleNamespace
 import httpx
 import pytest
 
+from prefect_aca_sessions import client as client_module
 from prefect_aca_sessions.client import (
     SessionExecutionError,
     SessionNotFoundError,
+    SessionPoolBusyError,
     SessionsClient,
 )
 
@@ -94,3 +96,69 @@ async def test_request_raises_not_found_on_404():
     async with make_client(lambda r: httpx.Response(404, text="no session")) as client:
         with pytest.raises(SessionNotFoundError, match="404"):
             await client.stop("abc")
+
+
+@pytest.fixture
+def sleeps(monkeypatch):
+    delays = []
+
+    async def fake_sleep(delay):
+        delays.append(delay)
+
+    monkeypatch.setattr(client_module.asyncio, "sleep", fake_sleep)
+    return delays
+
+
+async def test_start_retries_with_exponential_backoff_while_pool_is_busy(sleeps):
+    responses = iter([httpx.Response(429)] * 3 + [httpx.Response(200, json={"pid": 1})])
+
+    async with make_client(lambda r: next(responses)) as client:
+        await client.start("abc", "echo hi", {})
+
+    assert len(sleeps) == 3
+    for attempt, delay in enumerate(sleeps):
+        assert 2**attempt / 2 <= delay <= 2**attempt
+
+
+async def test_start_caps_backoff_delay(sleeps, monkeypatch):
+    monkeypatch.setattr(client_module, "START_MAX_ATTEMPTS", 12)
+
+    async with make_client(lambda r: httpx.Response(429)) as client:
+        with pytest.raises(SessionPoolBusyError):
+            await client.start("abc", "echo hi", {})
+
+    assert max(sleeps) <= client_module.START_BACKOFF_MAX_SECONDS
+
+
+async def test_start_honors_retry_after(sleeps):
+    responses = iter(
+        [httpx.Response(429, headers={"Retry-After": "7"}), httpx.Response(200, json={})]
+    )
+
+    async with make_client(lambda r: next(responses)) as client:
+        await client.start("abc", "echo hi", {})
+
+    assert sleeps == [7.0]
+
+
+async def test_start_gives_up_after_max_attempts(sleeps):
+    calls = []
+
+    def handler(request):
+        calls.append(request)
+        return httpx.Response(429, text="max sessions")
+
+    async with make_client(handler) as client:
+        with pytest.raises(SessionPoolBusyError, match="429"):
+            await client.start("abc", "echo hi", {})
+
+    assert len(calls) == client_module.START_MAX_ATTEMPTS
+    assert len(sleeps) == client_module.START_MAX_ATTEMPTS - 1
+
+
+async def test_start_does_not_retry_other_errors(sleeps):
+    async with make_client(lambda r: httpx.Response(500, text="boom")) as client:
+        with pytest.raises(SessionExecutionError, match="500"):
+            await client.start("abc", "echo hi", {})
+
+    assert sleeps == []

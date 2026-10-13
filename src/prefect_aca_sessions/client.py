@@ -1,5 +1,7 @@
 """Minimal async client for the agent in a custom container session pool."""
 
+import asyncio
+import random
 from typing import Any
 
 import httpx
@@ -9,6 +11,9 @@ from azure.identity.aio import DefaultAzureCredential
 SESSIONS_TOKEN_SCOPE = "https://dynamicsessions.io/.default"
 REQUEST_TIMEOUT_SECONDS = 300.0
 STOP_SESSION_API_VERSION = "2025-02-02-preview"
+START_MAX_ATTEMPTS = 8
+START_BACKOFF_BASE_SECONDS = 1.0
+START_BACKOFF_MAX_SECONDS = 60.0
 
 
 class SessionExecutionError(RuntimeError):
@@ -17,6 +22,21 @@ class SessionExecutionError(RuntimeError):
 
 class SessionNotFoundError(SessionExecutionError):
     """The session pool has no session with the requested identifier."""
+
+
+class SessionPoolBusyError(SessionExecutionError):
+    """The session pool could not allocate a session (HTTP 429), e.g. it is at max sessions."""
+
+    def __init__(self, message: str, retry_after: float | None = None) -> None:
+        super().__init__(message)
+        self.retry_after = retry_after
+
+
+def _retry_after_seconds(response: httpx.Response) -> float | None:
+    try:
+        return max(float(response.headers["Retry-After"]), 0.0)
+    except (KeyError, ValueError):
+        return None
 
 
 class SessionsClient:
@@ -54,21 +74,36 @@ class SessionsClient:
             **kwargs,
         )
         if response.is_error:
-            error = (
-                SessionNotFoundError
-                if response.status_code == 404
-                else SessionExecutionError
-            )
-            raise error(
+            message = (
                 f"Session {method} {path} returned HTTP {response.status_code}: {response.text}"
             )
+            if response.status_code == 429:
+                raise SessionPoolBusyError(message, _retry_after_seconds(response))
+            if response.status_code == 404:
+                raise SessionNotFoundError(message)
+            raise SessionExecutionError(message)
         return response
 
     async def start(self, identifier: str, command: str, env: dict[str, str]) -> None:
-        """Start `command` as a detached process in the session."""
-        await self._request(
-            "POST", "/start", identifier, json={"command": command, "env": env}
-        )
+        """Start `command` as a detached process in the session.
+
+        The first request for an identifier allocates its session. While the pool cannot
+        allocate one (HTTP 429) this retries with exponential backoff and jitter, honoring
+        `Retry-After`; a 429 is rejected by the pool, so the agent never saw the request.
+        """
+        for attempt in range(START_MAX_ATTEMPTS):
+            try:
+                await self._request(
+                    "POST", "/start", identifier, json={"command": command, "env": env}
+                )
+                return
+            except SessionPoolBusyError as exc:
+                if attempt == START_MAX_ATTEMPTS - 1:
+                    raise
+                backoff = min(
+                    START_BACKOFF_BASE_SECONDS * 2**attempt, START_BACKOFF_MAX_SECONDS
+                )
+                await asyncio.sleep(exc.retry_after or random.uniform(backoff / 2, backoff))
 
     async def poll(self, identifier: str, offset: int) -> dict[str, Any]:
         """New log text from `offset`, the next offset, whether more log remains, whether a
